@@ -5,29 +5,31 @@
 # This script extracts component package information from a .pkg or .mpkg installer using the Suspicious Package CLI.
 # It parses the output to list package identifiers and generates a manifest file with detailed information.
 #
-# Revised Date: 2026.06.12
-# Version: 1.1.5
+# Revised Date: 2026.06.16
+# Version: 1.2.0
 #
 # Public example script. Review and adapt for your environment before use.
 # This software is supplied as is without expressed or implied warranties of any kind.
-#
-# Copyright (c) 2026 University of Utah, Marriott Library Information Technology
-#
-# Permission to use, copy, modify, and distribute this software and
-# its documentation for any purpose and without fee is hereby granted,
-# provided that the above copyright notice appears in all copies and
-# that both that copyright notice and this permission notice appear
-# in supporting documentation, and that the name of The University
-# of Utah not be used in advertising or publicity pertaining to
-# distribution of the software without specific, written prior
-# permission. This software is supplied as is without expressed or
-# implied warranties of any kind.
 
 set -euo pipefail
 
-if ! command -v spkg >/dev/null 2>&1; then
-  echo "Error: 'spkg' command not found. Install Suspicious Package CLI first." >&2
-  exit 1
+if [[ -n "${SPKG_BIN:-}" ]]; then
+  if [[ ! -x "${SPKG_BIN}" ]]; then
+    echo "Error: SPKG_BIN is set but is not executable: ${SPKG_BIN}" >&2
+    exit 1
+  fi
+else
+  if ! command -v spkg >/dev/null 2>&1; then
+    echo "Error: 'spkg' command not found. Install Suspicious Package CLI first." >&2
+    exit 1
+  fi
+  SPKG_BIN="$(command -v spkg)"
+fi
+
+spkg_usage="$("${SPKG_BIN}" 2>&1 || true)"
+supports_json_manifest=0
+if printf "%s\n" "${spkg_usage}" | grep -q -- "--json-manifest"; then
+  supports_json_manifest=1
 fi
 
 prompt_copy_ai_context() {
@@ -142,18 +144,24 @@ pkg_stem="${pkg_name%.*}"
 timestamp="$(date +%Y%m%d_%H%M%S)"
 output_dir="${output_root}/${pkg_stem}"
 manifest_path="${output_dir}/${pkg_stem}_${timestamp}.spkg-manifest.txt"
+json_manifest_path="${output_dir}/${pkg_stem}_${timestamp}.spkg-manifest.json"
 ai_context_path="${output_dir}/${pkg_stem}_${timestamp}_ai_uninstall_context.txt"
 
 mkdir -p "${output_dir}"
 
 echo
 echo "Package: ${pkg_path}"
+echo "spkg: ${SPKG_BIN}"
 echo "Output folder: ${output_dir}"
-echo "Manifest output: ${manifest_path}"
+if [[ "${supports_json_manifest}" -eq 1 ]]; then
+  echo "JSON manifest output: ${json_manifest_path}"
+else
+  echo "Manifest output: ${manifest_path}"
+fi
 echo
 echo "== Component Package Info =="
 
-component_output="$(spkg --quiet --show-component-packages "${pkg_path}" 2>&1 || true)"
+component_output="$("${SPKG_BIN}" --quiet --show-component-packages "${pkg_path}" 2>&1 || true)"
 printf "%s\n" "${component_output}"
 
 echo
@@ -199,12 +207,18 @@ else
 fi
 
 echo
-echo "== Generating Manifest =="
-spkg --quiet --manifest "${manifest_path}" "${pkg_path}"
-echo "Manifest created: ${manifest_path}"
+if [[ "${supports_json_manifest}" -eq 1 ]]; then
+  echo "== Generating JSON Manifest =="
+  "${SPKG_BIN}" --quiet --json-manifest "${json_manifest_path}" "${pkg_path}"
+  echo "JSON manifest created: ${json_manifest_path}"
+else
+  echo "== Generating Manifest =="
+  "${SPKG_BIN}" --quiet --manifest "${manifest_path}" "${pkg_path}"
+  echo "Manifest created: ${manifest_path}"
 
-all_files_path="${manifest_path}/All Files"
-all_scripts_dir="${manifest_path}/All Scripts"
+  all_files_path="${manifest_path}/All Files"
+  all_scripts_dir="${manifest_path}/All Scripts"
+fi
 
 echo
 echo "== Generating AI Context File =="
@@ -280,44 +294,57 @@ PROMPT
   echo
   echo "########################################"
   echo
-  echo "Payload - ${pkg_stem}"
-  echo
-  if command -v tree >/dev/null 2>&1; then
-    if [[ -e "${all_files_path}" ]]; then
-      tree -a "${all_files_path}"
+  if [[ "${supports_json_manifest}" -eq 1 ]]; then
+    echo "JSON Manifest - ${pkg_stem}"
+    echo
+    if [[ -f "${json_manifest_path}" ]]; then
+      cat "${json_manifest_path}"
     else
-      echo "All Files path not found: ${all_files_path}"
+      echo "JSON manifest not found: ${json_manifest_path}"
     fi
   else
-    echo "tree command not found on this system."
+    echo "Payload - ${pkg_stem}"
+    echo
+    if command -v tree >/dev/null 2>&1; then
+      if [[ -e "${all_files_path}" ]]; then
+        tree -a "${all_files_path}"
+      else
+        echo "All Files path not found: ${all_files_path}"
+      fi
+    else
+      echo "tree command not found on this system."
+    fi
+    echo
+    echo "########################################"
+    echo
+
+    script_files=()
+    if [[ -d "${all_scripts_dir}" ]]; then
+      while IFS= read -r script_file; do
+        script_files+=("${script_file}")
+      done < <(find "${all_scripts_dir}" -type f ! -name "PackageInfo" | sort)
+    fi
+
+    if [[ ${#script_files[@]} -eq 0 ]]; then
+      echo "Scripts - ${pkg_stem}"
+      echo "None found in manifest output"
+      echo
+    else
+      for script_file in "${script_files[@]}"; do
+        script_name="$(basename "${script_file}")"
+        echo "${script_name} - ${pkg_stem}"
+        echo
+        cat "${script_file}"
+        echo
+        echo "########################################"
+        echo
+      done
+    fi
   fi
+
   echo
   echo "########################################"
   echo
-
-  script_files=()
-  if [[ -d "${all_scripts_dir}" ]]; then
-    while IFS= read -r script_file; do
-      script_files+=("${script_file}")
-    done < <(find "${all_scripts_dir}" -type f ! -name "PackageInfo" | sort)
-  fi
-
-  if [[ ${#script_files[@]} -eq 0 ]]; then
-    echo "Scripts - ${pkg_stem}"
-    echo "None found in manifest output"
-    echo
-  else
-    for script_file in "${script_files[@]}"; do
-      script_name="$(basename "${script_file}")"
-      echo "${script_name} - ${pkg_stem}"
-      echo
-      cat "${script_file}"
-      echo
-      echo "########################################"
-      echo
-    done
-  fi
-
   echo "Package ID - ${pkg_stem}"
   echo
   if [[ -n "${parsed_ids}" ]]; then
