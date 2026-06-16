@@ -101,11 +101,38 @@ You can provide a second argument to choose a different output root:
 For each installer, the script creates an output folder named after the package and writes files like:
 
 ```bash
+Vendor_Installer_20260612_143000.spkg-manifest.json
 Vendor_Installer_20260612_143000.spkg-manifest.txt
 Vendor_Installer_20260612_143000_ai_uninstall_context.txt
 ```
 
 The script also does some admin-friendly cleanup on input paths. If you paste a path with quotes, a trailing colon from Finder, a leading `~`, or escaped spaces, it normalizes the path before testing whether the package exists.
+
+## Suspicious Package 4.6.2 and JSON manifests
+
+Suspicious Package 4.6.2 adds a new `spkg` option:
+
+```bash
+spkg --json-manifest "/path/to/output.json" "/path/to/Installer.pkg"
+```
+
+This creates a single JSON manifest file instead of the directory-style diffable manifest produced by `--manifest`. That JSON output is useful for automation and AI-assisted workflows because it can be archived, parsed, validated, and passed into an LLM without first walking and flattening the manifest directory.
+
+`spkg_package_id_and_manifest.sh` automatically detects whether the installed `spkg` supports `--json-manifest`.
+
+- If JSON manifest support is available, the script creates a `.spkg-manifest.json` file and embeds that JSON in the generated AI context.
+- If JSON manifest support is not available, the script falls back to the older `--manifest` workflow and reconstructs the relevant payload and script context from the manifest directory.
+
+You can also test a preview or alternate `spkg` binary without replacing your installed copy by setting `SPKG_BIN`:
+
+```bash
+SPKG_BIN="/Volumes/Suspicious Package 4.6.2/Suspicious Package.app/Contents/SharedSupport/spkg" \
+  /path/to/spkg_package_id_and_manifest.sh \
+  "/path/to/Installer.pkg" \
+  "/path/to/output"
+```
+
+This keeps the helper script backward-compatible with Suspicious Package 4.6.1 and earlier while taking advantage of the cleaner JSON output in 4.6.2 and later.
 
 ## Example script run
 
