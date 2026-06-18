@@ -5,8 +5,8 @@
 # This script extracts component package information from a .pkg or .mpkg installer using the Suspicious Package CLI.
 # It parses the output to list package identifiers and generates a manifest file with detailed information.
 #
-# Revised Date: 2026.06.16
-# Version: 1.2.0
+# Revised Date: 2026.06.18
+# Version: 1.3.0
 #
 # Public example script. Review and adapt for your environment before use.
 # This software is supplied as is without expressed or implied warranties of any kind.
@@ -236,6 +236,22 @@ The evidence below was extracted from a macOS `.pkg` or `.mpkg` installer by Sus
 
 Assume no access to the original package, local machine, internet, vendor documentation, or any files not shown below.
 
+### UNINSTALL MODEL ###
+Use a label-style uninstall model inspired by community macOS uninstallers:
+- `APP_TITLE`: human-readable software name.
+- `PACKAGE_IDS`: installer receipts to forget.
+- `PROCESSES`: exact process names or proven executable paths to stop.
+- `LAUNCH_AGENTS`: exact LaunchAgent plist paths or labels found in evidence.
+- `LAUNCH_DAEMONS`: exact LaunchDaemon plist paths or labels found in evidence.
+- `FILES`: exact installed files, app bundles, helpers, plugins, tools, and symlinks.
+- `DIRECTORIES`: exact package-owned directories safe to remove recursively.
+- `EMPTY_DIRECTORIES`: parent directories to remove only if empty after cleanup.
+- `UNCERTAIN_ITEMS`: related-looking artifacts that should be reported but not deleted.
+
+If the package evidence includes a primary app bundle, read its `CFBundleIdentifier`
+when present and consider it as an additional receipt candidate only if `pkgutil`
+shows an exact installed receipt match.
+
 ### TASK ###
 Create one complete SAFE, IDEMPOTENT bash uninstall script for this package.
 
@@ -247,8 +263,10 @@ Before writing the script, privately work through these steps:
 2. Treat payload paths as the highest-confidence removal source.
 3. Treat installer scripts as supporting evidence for related processes, services, generated files, helpers, extensions, and receipts.
 4. Separate high-confidence removal targets from uncertain targets.
-5. For uncertain targets, do not remove them; log a warning or include them in verification output.
-6. Check the final script for syntax issues, unsafe deletes, missing quoting, missing dry-run handling, and risky assumptions.
+5. Identify normal preference plists and their matching ByHost variants, but remove
+   ByHost files only when the base preference plist is high-confidence package-owned.
+6. For uncertain targets, do not remove them; log a warning or include them in verification output.
+7. Check the final script for syntax issues, unsafe deletes, missing quoting, missing dry-run handling, and risky assumptions.
 
 ### CONSTRAINTS ###
 - Start with `#!/bin/bash`.
@@ -259,17 +277,22 @@ Before writing the script, privately work through these steps:
 - Add timestamped logging, action logging, warning logging, and a final summary.
 - Support `DRY_RUN=1` so the script can preview actions without changing the system.
 - Stop matching processes gracefully first, then force-stop only if they are still running.
-- Unload or boot out matching LaunchAgents and LaunchDaemons before removing their plist files.
+- Unload or boot out matching LaunchAgents and LaunchDaemons before removing their plist files. Use modern `launchctl bootout` where possible and tolerate already-unloaded services.
 - Run `pkgutil --forget` for each listed package ID, with logging.
+- If Jamf App Installers receipts are clearly associated with the app title, forget exact matches such as `com.jamf.appinstallers.<title>` only after checking they exist.
+- Run `killall -q cfprefsd` near the end only if preference files were removed.
 - Handle missing files, unloaded services, absent processes, and forgotten receipts gracefully.
 
 ### DELETION SAFETY RULES ###
 - Remove only exact payload paths or clearly package-owned generated paths shown by installer context.
 - Remove directories only when they are package-owned and empty after file removal, or when the entire directory path is explicitly package-owned in the payload.
 - Never recursively delete broad shared locations such as `/Applications`, `/Library`, `/Library/Application Support`, `/Library/Preferences`, `/Library/PrivilegedHelperTools`, `/Users`, `/Users/Shared`, or user home directories.
+- Default to preserving user-home data. Remove user LaunchAgents if they are package-owned because they can keep services alive; remove user preferences, caches, Application Support, containers, group containers, logs, or saved state only when the evidence clearly identifies them as package-owned and the script has an explicit `REMOVE_USER_DATA=1` or equivalent opt-in.
+- If expanding paths for all users, enumerate real home directories safely and skip system/shared accounts.
 - Do not use broad wildcards, fuzzy matching, `find` sweeps, or namespace guesses outside clear package-owned paths.
 - Do not remove files merely because names look similar. Require evidence from the payload, scripts, package IDs, launch labels, or bundle identifiers.
 - Do not delete user-created documents, project folders, downloads, caches, or preferences unless the installer evidence clearly shows they are package-owned and safe to remove.
+- Do not execute vendor preinstall, postinstall, or uninstall script contents blindly. Translate only clearly relevant and safe cleanup actions into reviewed helper functions or log them as uncertain items.
 
 ### REQUIRED SCRIPT STRUCTURE ###
 1. Header comment with purpose, safety notes, and dry-run usage.

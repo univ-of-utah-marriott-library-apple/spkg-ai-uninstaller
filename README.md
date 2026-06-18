@@ -267,7 +267,31 @@ The generated prompt instructs AI to treat payload paths as the highest-confiden
 
 That framing prevents one of the most common AI mistakes in uninstallers: removing broad shared directories because they "look related." For example, `/Library/Application Support/Vendor` might be safe for one product and dangerously shared for another. The prompt explicitly discourages broad deletion, wildcards, and filesystem sweeps.
 
+The current prompt also uses a label-style uninstall model inspired by community Mac admin uninstallers. Instead of asking AI to improvise, it asks for named configuration arrays:
+
+- `APP_TITLE`
+- `PACKAGE_IDS`
+- `PROCESSES`
+- `LAUNCH_AGENTS`
+- `LAUNCH_DAEMONS`
+- `FILES`
+- `DIRECTORIES`
+- `EMPTY_DIRECTORIES`
+- `UNCERTAIN_ITEMS`
+
+That structure makes the generated script easier to review because the destructive targets are grouped near the top instead of scattered throughout helper logic. It also gives reviewers a simple checklist: receipts, processes, launch items, files, directories, and anything uncertain.
+
 Package payload evidence is the starting point, not the complete story for every application. Some software creates additional files after installation during first launch, relaunch, licensing, update checks, helper startup, background service initialization, or normal user activity. Those items may not appear in the original installer package at all. Treat them as a separate discovery step: install the app on a test Mac, launch it, exercise the expected workflow, then compare filesystem changes or review known vendor locations before deciding whether any post-install artifacts belong in the uninstaller.
+
+The default posture for user-home data is conservative. User LaunchAgents may need to be unloaded and removed when they are clearly package-owned, because they can keep background processes alive. User preferences, caches, Application Support folders, containers, group containers, logs, saved state, and similar files should be preserved unless the uninstall script has an explicit opt-in such as `REMOVE_USER_DATA=1` and the evidence clearly shows those paths are package-owned.
+
+The prompt now also calls out a few macOS-specific cleanup details that are easy to miss:
+
+- Use modern `launchctl bootout` where possible, while tolerating already-unloaded services.
+- Consider matching ByHost preference plists only when the base preference plist is proven package-owned.
+- Forget exact Jamf App Installers receipts when they are clearly associated with the app title.
+- Run `killall -q cfprefsd` near the end only if preference files were removed.
+- Translate safe vendor script actions into reviewed helper logic instead of executing installer scripts blindly.
 
 The requested uninstall script structure includes:
 
