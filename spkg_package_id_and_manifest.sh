@@ -5,11 +5,19 @@
 # This script extracts component package information from a .pkg or .mpkg installer using the Suspicious Package CLI.
 # It parses the output to list package identifiers and generates a manifest file with detailed information.
 #
-# Revised Date: 2026.06.18
-# Version: 1.3.0
+# Revised Date: 2026.06.19
+# Version: 1.4.0
 #
 # Public example script. Review and adapt for your environment before use.
 # This software is supplied as is without expressed or implied warranties of any kind.
+
+if [[ -z "${ZSH_VERSION:-}" ]]; then
+  if command -v zsh >/dev/null 2>&1; then
+    exec zsh "$0" "$@"
+  fi
+  echo "Error: this script requires zsh. Run it with zsh or execute it directly." >&2
+  exit 1
+fi
 
 set -euo pipefail
 
@@ -246,6 +254,10 @@ Use a label-style uninstall model inspired by community macOS uninstallers:
 - `FILES`: exact installed files, app bundles, helpers, plugins, tools, and symlinks.
 - `DIRECTORIES`: exact package-owned directories safe to remove recursively.
 - `EMPTY_DIRECTORIES`: parent directories to remove only if empty after cleanup.
+- `PROCESS_PATTERNS`: exact executable path fragments for helpers whose process names
+  may not match their app bundle names.
+- `UI_REFRESH_ACTIONS`: menu bar, login item, or Background Items refresh actions that
+  may clear stale UI state after package-owned binaries are removed.
 - `UNCERTAIN_ITEMS`: related-looking artifacts that should be reported but not deleted.
 
 If the package evidence includes a primary app bundle, read its `CFBundleIdentifier`
@@ -265,8 +277,11 @@ Before writing the script, privately work through these steps:
 4. Separate high-confidence removal targets from uncertain targets.
 5. Identify normal preference plists and their matching ByHost variants, but remove
    ByHost files only when the base preference plist is high-confidence package-owned.
-6. For uncertain targets, do not remove them; log a warning or include them in verification output.
-7. Check the final script for syntax issues, unsafe deletes, missing quoting, missing dry-run handling, and risky assumptions.
+6. Identify whether menu-bar helpers, login items, or Background Items can leave stale
+   UI state after the owning files are removed.
+7. For uncertain targets, do not remove them; report them as intentionally preserved
+   related items rather than treating them as uninstall failures.
+8. Check the final script for syntax issues, unsafe deletes, missing quoting, missing dry-run handling, slow UI automation, and risky assumptions.
 
 ### CONSTRAINTS ###
 - Start with `#!/bin/bash`.
@@ -276,12 +291,28 @@ Before writing the script, privately work through these steps:
 - Put removable files, directories, launch items, processes, and receipts in readable arrays.
 - Add timestamped logging, action logging, warning logging, and a final summary.
 - Support `DRY_RUN=1` so the script can preview actions without changing the system.
-- Stop matching processes gracefully first, then force-stop only if they are still running.
+- Stop visible user-facing apps gracefully first, then unload or boot out launchd items,
+  then stop helper/menu-bar/background processes. Run a final process sweep after file
+  removal so launchd cannot immediately relaunch helpers during uninstall.
+- Match helper processes by both exact process names and exact package-owned executable
+  path fragments when the evidence shows helper apps, login items, XPC services, or
+  menu-bar components.
 - Unload or boot out matching LaunchAgents and LaunchDaemons before removing their plist files. Use modern `launchctl bootout` where possible and tolerate already-unloaded services.
 - Run `pkgutil --forget` for each listed package ID, with logging.
 - If Jamf App Installers receipts are clearly associated with the app title, forget exact matches such as `com.jamf.appinstallers.<title>` only after checking they exist.
 - Run `killall -q cfprefsd` near the end only if preference files were removed.
 - Handle missing files, unloaded services, absent processes, and forgotten receipts gracefully.
+- If package-owned menu-bar or status-item helpers were removed, refresh stale UI state
+  with a targeted `SystemUIServer` restart for GUI users. Do not treat a stale menu
+  icon as proof that a package-owned process remains; verify with process and path checks.
+- Make slow or broad UI cleanup opt-in or conditional. For example, legacy Login Items
+  cleanup through `osascript`/System Events should require an explicit variable such as
+  `CLEANUP_LEGACY_LOGIN_ITEMS=1`, and Background Items reset with `sfltool resetbtm`
+  should run only when `sfltool dumpbtm` reports matching vendor entries or when an
+  explicit override is set.
+- Design GUI-user actions to be safe at the login window: tolerate no logged-in user,
+  skip user-scoped UI work when no GUI session exists, and still remove system-level
+  launchd items, files, and receipts.
 
 ### DELETION SAFETY RULES ###
 - Remove only exact payload paths or clearly package-owned generated paths shown by installer context.
@@ -293,6 +324,9 @@ Before writing the script, privately work through these steps:
 - Do not remove files merely because names look similar. Require evidence from the payload, scripts, package IDs, launch labels, or bundle identifiers.
 - Do not delete user-created documents, project folders, downloads, caches, or preferences unless the installer evidence clearly shows they are package-owned and safe to remove.
 - Do not execute vendor preinstall, postinstall, or uninstall script contents blindly. Translate only clearly relevant and safe cleanup actions into reviewed helper functions or log them as uncertain items.
+- Avoid broad resets that affect unrelated apps unless explicitly requested. If a reset
+  can affect other applications, document the tradeoff in the variable name, log output,
+  and final summary.
 
 ### REQUIRED SCRIPT STRUCTURE ###
 1. Header comment with purpose, safety notes, and dry-run usage.
@@ -300,10 +334,11 @@ Before writing the script, privately work through these steps:
 3. Helper functions for logging, dry-run execution, process stopping, launchd unloading, file removal, directory removal, receipt forgetting, and verification.
 4. Main execution flow:
    - Check privileges.
-   - Stop related processes.
    - Unload related launch services.
+   - Stop related processes and helper processes.
    - Remove high-confidence files.
    - Remove high-confidence directories according to the deletion safety rules.
+   - Refresh stale UI/menu-bar state only when appropriate.
    - Forget package receipts.
    - Verify remaining artifacts.
    - Print final summary.
